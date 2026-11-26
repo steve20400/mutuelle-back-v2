@@ -1,0 +1,113 @@
+name: Build et demarrage du backend
+
+# Verifie trois choses, entierement sur les serveurs de GitHub :
+#   1. le projet compile avec le meme JDK que l'image Docker (Java 21),
+#   2. l'application demarre reellement sur MySQL 8 et Flyway applique
+#      toutes les migrations de src/main/resources/db/migration,
+#   3. l'image Docker se construit, ce qui est exactement ce que fait Render.
+#
+# Le diagnostic est recopie dans le resume de l'execution, lisible sans se
+# connecter, ce qui evite d'avoir a ouvrir les journaux detailles.
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths-ignore:
+      - "**.md"
+
+jobs:
+  build-et-demarrage:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+
+    services:
+      mysql:
+        image: mysql:8.0
+        env:
+          MYSQL_DATABASE: mutuelle_ci
+          MYSQL_USER: mutuelle_ci
+          MYSQL_PASSWORD: mutuelle_ci
+          MYSQL_ROOT_PASSWORD: racine_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pracine_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v5
+
+      - name: Installer le JDK 21
+        uses: actions/setup-java@v5
+        with:
+          distribution: temurin
+          java-version: 21
+          cache: maven
+
+      - name: Compiler le jar
+        run: mvn -B -DskipTests package
+
+      - name: Demarrer l'application sur MySQL
+        id: demarrage
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: mutuelle_ci
+          DB_USER: mutuelle_ci
+          DB_PASSWORD: mutuelle_ci
+        run: |
+          java -jar target/*.jar > demarrage.log 2>&1 &
+          echo $! > app.pid
+          # Pas d'actuateur dans ce projet : /api/hello sert de sonde de sante.
+          echo "Attente de /api/hello pendant 300 secondes au maximum"
+          for i in $(seq 1 100); do
+            code=$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/hello || true)
+            if [ "$code" = "200" ]; then
+              echo "resultat=demarree" >> "$GITHUB_OUTPUT"
+              echo "duree=$((i * 3))" >> "$GITHUB_OUTPUT"
+              echo "Application demarree apres environ $((i * 3)) secondes"
+              exit 0
+            fi
+            if ! kill -0 "$(cat app.pid)" 2>/dev/null; then
+              echo "resultat=processus_mort" >> "$GITHUB_OUTPUT"
+              echo "::error::Le processus Java s'est arrete avant de repondre"
+              exit 1
+            fi
+            sleep 3
+          done
+          echo "resultat=delai_depasse" >> "$GITHUB_OUTPUT"
+          echo "::error::/api/hello n'a pas repondu 200 en 300 secondes"
+          exit 1
+
+      - name: Resume du demarrage
+        if: always()
+        run: |
+          {
+            echo "## Demarrage du backend sur MySQL 8"
+            echo
+            echo "- Resultat : \`${{ steps.demarrage.outputs.resultat }}\`"
+            if [ -n "${{ steps.demarrage.outputs.duree }}" ]; then
+              echo "- Duree : environ ${{ steps.demarrage.outputs.duree }} secondes"
+            fi
+            if [ -f demarrage.log ]; then
+              echo "- Migrations Flyway : $(grep -oE 'Successfully applied [0-9]+ migrations?' demarrage.log | tail -1 || echo 'aucune ligne trouvee')"
+              echo
+              echo "### Dernieres lignes du journal"
+              echo
+              echo '```'
+              grep -vE '^\s*(select|insert|update|delete|from|where|and|or|values|set|order|limit)\b|Hibernate:' demarrage.log | tail -60
+              echo '```'
+            fi
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Arreter l'application
+        if: always()
+        run: |
+          if [ -f app.pid ]; then kill "$(cat app.pid)" 2>/dev/null || true; fi
+
+      - name: Construire l'image Docker
+        run: docker build -t mutuelle-back-v2 .
