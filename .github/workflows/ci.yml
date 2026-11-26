@@ -2,7 +2,8 @@ name: Build et demarrage du backend
 
 # Verifie trois choses, entierement sur les serveurs de GitHub :
 #   1. le projet compile avec le meme JDK que l'image Docker (Java 21),
-#   2. l'application demarre reellement sur MySQL 8 et Flyway applique
+#   2. l'application demarre reellement sur MySQL 8.4 (meme version que la
+#      base Aiven de production) et Flyway applique
 #      toutes les migrations de src/main/resources/db/migration,
 #   3. l'image Docker se construit, ce qui est exactement ce que fait Render.
 #
@@ -23,7 +24,7 @@ jobs:
 
     services:
       mysql:
-        image: mysql:8.0
+        image: mysql:8.4
         env:
           MYSQL_DATABASE: mutuelle_ci
           MYSQL_USER: mutuelle_ci
@@ -87,7 +88,7 @@ jobs:
         if: always()
         run: |
           {
-            echo "## Demarrage du backend sur MySQL 8"
+            echo "## Demarrage du backend sur MySQL 8.4"
             echo
             echo "- Resultat : \`${{ steps.demarrage.outputs.resultat }}\`"
             if [ -n "${{ steps.demarrage.outputs.duree }}" ]; then
