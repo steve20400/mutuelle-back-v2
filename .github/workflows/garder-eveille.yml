@@ -1,0 +1,29 @@
+name: Garder le backend eveille
+
+# Pendant la campagne de tests, l'offre gratuite de Render endort le service
+# apres 15 minutes sans requete, et le premier appel des testeurs echoue alors
+# souvent avec "Impossible de joindre le serveur". Ce workflow appelle
+# /api/hello toutes les 5 minutes (GitHub retarde parfois les taches planifiees
+# de plusieurs minutes, d'ou un intervalle inferieur aux 15 minutes de Render).
+#
+# A supprimer (ou desactiver dans l'onglet Actions) a la fin de la campagne :
+# un service eveille en permanence consomme environ 720 des 750 heures
+# gratuites mensuelles partagees par tous les services gratuits du compte Render.
+
+on:
+  workflow_dispatch:
+  schedule:
+    - cron: "*/5 * * * *"
+
+jobs:
+  appel:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+    steps:
+      - name: Appeler /api/hello
+        run: |
+          resultat=$(curl -s -o /dev/null --max-time 150 --retry 2 --retry-delay 10 \
+            -w '%{http_code} en %{time_total} s' \
+            https://mutuelle-back-v2.onrender.com/api/hello || echo "echec")
+          echo "Reponse : $resultat"
+          echo "Appel de /api/hello : $resultat" >> "$GITHUB_STEP_SUMMARY"
