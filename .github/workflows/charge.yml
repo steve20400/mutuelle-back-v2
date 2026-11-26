@@ -1,0 +1,107 @@
+name: Montee en charge du backend
+
+# Mesure le comportement de l'API sous charge croissante (20, 50, 100 puis 200
+# utilisateurs simultanes), sur trois tailles de serveur simulees en limitant le
+# conteneur Docker. Tout se passe sur les serveurs de GitHub, avec une base MySQL
+# jetable : la base de production n'est jamais touchee.
+#
+# Resultats : resume de chaque execution, annotations, et artefacts (CSV, JSON).
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [main]
+    paths:
+      - "charge/**"
+      - ".github/workflows/charge.yml"
+
+jobs:
+  charge:
+    runs-on: ubuntu-latest
+    timeout-minutes: 45
+    strategy:
+      fail-fast: false
+      matrix:
+        config:
+          - { nom: "1cpu-1go", cpus: "1", memoire: "1g" }
+          - { nom: "2cpu-2go", cpus: "2", memoire: "2g" }
+          - { nom: "2cpu-4go", cpus: "2", memoire: "4g" }
+
+    services:
+      mysql:
+        image: mysql:8.4
+        env:
+          MYSQL_DATABASE: mutuelle_ci
+          MYSQL_USER: mutuelle_ci
+          MYSQL_PASSWORD: mutuelle_ci
+          MYSQL_ROOT_PASSWORD: racine_ci
+        ports:
+          - 3306:3306
+        options: >-
+          --health-cmd "mysqladmin ping -h 127.0.0.1 -uroot -pracine_ci"
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 20
+
+    steps:
+      - name: Recuperer le code
+        uses: actions/checkout@v5
+
+      - name: Construire l'image Docker
+        run: docker build -q -t mutuelle-back .
+
+      - name: Demarrer l'API avec des ressources limitees
+        id: api
+        run: |
+          debut=$(date +%s)
+          docker run -d --name api --network host \
+            --cpus "${{ matrix.config.cpus }}" --memory "${{ matrix.config.memoire }}" \
+            -e DB_HOST=127.0.0.1 -e DB_PORT=3306 -e DB_NAME=mutuelle_ci \
+            -e DB_USER=mutuelle_ci -e DB_PASSWORD=mutuelle_ci \
+            -e JAVA_TOOL_OPTIONS=-XX:MaxRAMPercentage=75 \
+            mutuelle-back
+          for i in $(seq 1 150); do
+            if [ "$(curl -s -o /dev/null -w '%{http_code}' http://127.0.0.1:8080/api/hello)" = "200" ]; then
+              echo "demarrage=$(( $(date +%s) - debut ))" >> "$GITHUB_OUTPUT"
+              exit 0
+            fi
+            sleep 2
+          done
+          docker logs api 2>&1 | tail -60
+          exit 1
+
+      - name: Creer les comptes fictifs
+        run: NB_COMPTES=200 bash charge/creer_comptes.sh
+
+      - name: Relever CPU et memoire en continu
+        run: |
+          nohup bash -c 'while true; do echo "$(date +%s),$(docker stats --no-stream --format "{{.CPUPerc}},{{.MemUsage}}" api)" >> charge/stats.csv; sleep 3; done' > /dev/null 2>&1 &
+
+      - name: Lancer k6
+        run: |
+          date +%s > charge/debut_k6.txt
+          docker run --rm --network host -u "$(id -u)" -v "$PWD/charge:/charge" \
+            grafana/k6:0.49.0 run --quiet /charge/charge.js || true
+
+      - name: Test de concurrence
+        run: bash charge/concurrence.sh "${{ matrix.config.nom }}"
+
+      - name: Analyser les resultats
+        if: always()
+        env:
+          CONFIG: ${{ matrix.config.nom }}
+          DEMARRAGE: ${{ steps.api.outputs.demarrage }}
+        run: |
+          echo "erreurs_serveur=$(docker logs api 2>&1 | grep -cE ' ERROR |Exception' || true)" > charge/journal.txt
+          echo "oom=$(docker inspect -f '{{.State.OOMKilled}}' api)" >> charge/journal.txt
+          python3 charge/analyse.py
+
+      - name: Conserver les mesures
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: charge-${{ matrix.config.nom }}
+          path: |
+            charge/*.csv
+            charge/*.json
+            charge/*.txt
