@@ -87,6 +87,30 @@ jobs:
           echo "::error::/api/hello n'a pas repondu 200 en 300 secondes"
           exit 1
 
+      - name: Tests de fumee sur les parcours corriges
+        if: steps.demarrage.outputs.resultat == 'demarree'
+        run: |
+          API=http://localhost:8080
+          echecs=0
+          verifier() { # libelle, code attendu, code obtenu
+            if [ "$2" = "$3" ]; then echo "OK      $1 ($3)"; else echo "ECHEC   $1 : attendu $2, obtenu $3"; echecs=$((echecs + 1)); fi
+            echo "| $1 | $2 | $3 |" >> fumee.md
+          }
+          echo "| Verification | Attendu | Obtenu |" > fumee.md
+          echo "|---|---|---|" >> fumee.md
+          membre=$(curl -s -H 'Content-Type: application/json' \
+            -d '{"nom":"Fumee","prenom":"Test","couriel":"fumee@ci.test","telephone":"699000001"}' $API/api/membres)
+          id=$(echo "$membre" | jq -r '.id')
+          verifier "creation d'un membre" "true" "$([ -n "$id" ] && [ "$id" != null ] && echo true || echo false)"
+          # C8 : les listes de versements repondaient 500 des qu'elles n'etaient plus vides
+          verifier "demande d'epargne" 201 "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"membreId\":\"$id\",\"montant\":1000}" $API/api/versements/epargne)"
+          verifier "historique du membre" 200 "$(curl -s -o /dev/null -w '%{http_code}' $API/api/versements/membre/$id)"
+          verifier "tous les versements" 200 "$(curl -s -o /dev/null -w '%{http_code}' $API/api/versements)"
+          verifier "versements d'epargne" 200 "$(curl -s -o /dev/null -w '%{http_code}' "$API/api/versements?raison=epargne")"
+          verifier "versements en attente" 200 "$(curl -s -o /dev/null -w '%{http_code}' $API/api/versements/en-attente)"
+          { echo "## Tests de fumee"; echo; cat fumee.md; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$echecs" -eq 0 ] || { echo "::error::$echecs verification(s) en echec"; exit 1; }
+
       - name: Resume du demarrage
         if: always()
         run: |
