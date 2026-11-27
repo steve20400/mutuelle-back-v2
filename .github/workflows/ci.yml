@@ -119,6 +119,60 @@ jobs:
           { echo "## Tests de fumee"; echo; cat fumee.md; } >> "$GITHUB_STEP_SUMMARY"
           [ "$echecs" -eq 0 ] || { echo "::error::$echecs verification(s) en echec"; exit 1; }
 
+      - name: Tests de securite avec le jeton obligatoire
+        if: steps.demarrage.outputs.resultat == 'demarree'
+        env:
+          DB_HOST: 127.0.0.1
+          DB_PORT: 3306
+          DB_NAME: mutuelle_ci
+          DB_USER: mutuelle_ci
+          DB_PASSWORD: mutuelle_ci
+          SECURITE_JWT_OBLIGATOIRE: "true"
+          SECURITE_JWT_SECRET: valeur-de-test-uniquement-pour-l-integration-continue
+        run: |
+          # Redemarrage de l'API avec le jeton obligatoire
+          kill "$(cat app.pid)" 2>/dev/null || true
+          sleep 5
+          java -jar target/*.jar > securite.log 2>&1 &
+          echo $! > app.pid
+          for i in $(seq 1 100); do
+            [ "$(curl -s -o /dev/null -w '%{http_code}' http://localhost:8080/api/hello)" = "200" ] && break
+            sleep 3
+          done
+          API=http://localhost:8080
+          echecs=0
+          verifier() { # libelle, attendu, obtenu
+            if [ "$2" = "$3" ]; then echo "OK      $1 ($3)"; else echo "ECHEC   $1 : attendu $2, obtenu $3"; echecs=$((echecs + 1)); fi
+            echo "| $1 | $2 | $3 |" >> securite.md
+          }
+          code() { curl -s -o /dev/null -w '%{http_code}' "$@"; }
+          echo "| Verification | Attendu | Obtenu |" > securite.md
+          echo "|---|---|---|" >> securite.md
+          verifier "liste des membres sans jeton" 401 "$(code $API/api/membres)"
+          sg=$(curl -s -H 'Content-Type: application/json' \
+            -d '{"login":"secretaire_general@mutuelle.cm","password":"MonMot2Passe!"}' $API/api/auth/login-administration)
+          jeton_sg=$(echo "$sg" | jq -r '.token // empty')
+          verifier "jeton a la connexion du bureau" true "$([ -n "$jeton_sg" ] && echo true || echo false)"
+          verifier "liste des membres avec le jeton du bureau" 200 "$(code -H "Authorization: Bearer $jeton_sg" $API/api/membres)"
+          m=$(curl -s -H 'Content-Type: application/json' \
+            -d '{"login":"fumee@ci.test","password":"MonMot2Passe!"}' $API/api/auth/login-membre)
+          jeton_m=$(echo "$m" | jq -r '.token // empty')
+          renouv_m=$(echo "$m" | jq -r '.refreshToken // empty')
+          id_m=$(echo "$m" | jq -r '.data.id')
+          verifier "liste des membres avec un jeton de membre" 403 "$(code -H "Authorization: Bearer $jeton_m" $API/api/membres)"
+          verifier "le membre lit sa propre fiche" 200 "$(code -H "Authorization: Bearer $jeton_m" $API/api/membres/$id_m)"
+          verifier "le membre lit son historique" 200 "$(code -H "Authorization: Bearer $jeton_m" $API/api/versements/membre/$id_m)"
+          autre=$(curl -s -H "Authorization: Bearer $jeton_sg" -H 'Content-Type: application/json' \
+            -d '{"nom":"Autre","prenom":"Membre","couriel":"autre@ci.test","telephone":"699000002"}' $API/api/membres | jq -r '.id')
+          verifier "creation d'un membre par le secretaire general" true "$([ -n "$autre" ] && [ "$autre" != null ] && echo true || echo false)"
+          verifier "le membre lit la fiche d'un autre" 403 "$(code -H "Authorization: Bearer $jeton_m" $API/api/membres/$autre)"
+          verifier "creation d'un membre par un membre" 403 "$(code -X POST -H "Authorization: Bearer $jeton_m" -H 'Content-Type: application/json' -d '{"nom":"X","couriel":"x@ci.test","telephone":"699000003"}' $API/api/membres)"
+          verifier "jeton de renouvellement utilise comme acces" 401 "$(code -H "Authorization: Bearer $renouv_m" $API/api/membres/$id_m)"
+          verifier "renouvellement des jetons" 200 "$(code -H 'Content-Type: application/json' -d "{\"refreshToken\":\"$renouv_m\"}" $API/api/auth/refresh)"
+          verifier "jeton falsifie" 401 "$(code -H "Authorization: Bearer ${jeton_m}x" $API/api/membres/$id_m)"
+          { echo "## Tests de securite (jeton obligatoire)"; echo; cat securite.md; } >> "$GITHUB_STEP_SUMMARY"
+          [ "$echecs" -eq 0 ] || { echo "::error::$echecs verification(s) de securite en echec"; grep -E "ERROR|Exception" securite.log | head -20; exit 1; }
+
       - name: Resume du demarrage
         if: always()
         run: |

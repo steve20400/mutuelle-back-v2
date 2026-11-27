@@ -10,7 +10,7 @@
 	</parent>
 	<groupId>com.mutuelle</groupId>
 	<artifactId>api</artifactId>
-	<version>1.0.2</version>
+	<version>1.1.0</version>
 	<name>api</name>
 	<description>API for Mutuelle application</description>
 	<url/>
@@ -41,6 +41,15 @@
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
 			<artifactId>spring-boot-starter-security</artifactId>
+		</dependency>
+		<!-- Jetons JWT (F1-03) : versions gérées par Spring Boot -->
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-oauth2-resource-server</artifactId>
+		</dependency>
+		<dependency>
+			<groupId>org.springframework.security</groupId>
+			<artifactId>spring-security-oauth2-jose</artifactId>
 		</dependency>
 		<dependency>
 			<groupId>org.springframework.boot</groupId>
