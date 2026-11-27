@@ -12,10 +12,13 @@ name: Build et demarrage du backend
 
 on:
   workflow_dispatch:
+  # Toutes les branches : chaque correction est verifiee sur sa propre branche
+  # avant d'etre fusionnee dans main (que Render deploie automatiquement).
   push:
-    branches: [main]
+    branches: ["**"]
     paths-ignore:
       - "**.md"
+  pull_request:
 
 jobs:
   build-et-demarrage:
