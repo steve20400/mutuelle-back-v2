@@ -3,6 +3,7 @@ package com.mutuelle.api.entity;
 import jakarta.persistence.*;
 import jakarta.validation.constraints.NotNull;
 import lombok.*;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
@@ -28,4 +29,11 @@ public class Exercice {
     @Column(name = "statut", nullable = false, length = 50)
     @Builder.Default
     private String statut = "en cours"; // "en cours", "ferme"
+
+    /** Parts appliquées à chaque membre actif à l'ouverture ; null pour un exercice ouvert avant leur mémorisation. */
+    @Column(name = "part_inscription", precision = 15, scale = 2)
+    private BigDecimal partInscription;
+
+    @Column(name = "part_solidarite", precision = 15, scale = 2)
+    private BigDecimal partSolidarite;
 }

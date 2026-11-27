@@ -1,6 +1,7 @@
 package com.mutuelle.api.service;
 
 import com.mutuelle.api.dto.CreateMembreRequest;
+import com.mutuelle.api.dto.PartsRenflouement;
 import com.mutuelle.api.entity.Membre;
 import com.mutuelle.api.repository.MembreRepository;
 import org.slf4j.Logger;
@@ -8,6 +9,7 @@ import org.slf4j.LoggerFactory;
 import org.springframework.beans.factory.annotation.Autowired;
 import org.springframework.stereotype.Service;
 
+import java.math.BigDecimal;
 import java.util.List;
 import java.util.Optional;
 
@@ -21,6 +23,9 @@ public class MembreService {
 
     @Autowired
     private PasswordService passwordService;
+
+    @Autowired
+    private ExerciceService exerciceService;
 
     public List<Membre> getAllMembres() {
         return membreRepository.findAll();
@@ -87,6 +92,18 @@ public class MembreService {
 
         boolean isInscriptionPayee = request.getInscriptionPayee() != null ? request.getInscriptionPayee() : false;
 
+        // Un membre créé pendant un exercice ouvert doit les mêmes parts que les membres
+        // actifs à l'ouverture ; sans exercice, rien n'est dû avant la prochaine ouverture.
+        // Les statuts découlent des dettes : un statut « non payé » avec 0 FCFA à payer
+        // bloquait le membre devant un paiement impossible.
+        BigDecimal detteInscription = BigDecimal.ZERO;
+        BigDecimal detteSolidarite = BigDecimal.ZERO;
+        Optional<PartsRenflouement> parts = exerciceService.partsPourNouveauMembre();
+        if (parts.isPresent()) {
+            detteInscription = isInscriptionPayee ? BigDecimal.ZERO : parts.get().inscription();
+            detteSolidarite = parts.get().solidarite();
+        }
+
         Membre membre = Membre.builder()
                 .nom(request.getNom())
                 .prenom(request.getPrenom())
@@ -94,10 +111,10 @@ public class MembreService {
                 .telephone(request.getTelephone())
                 .photo(request.getPhoto())
                 .compteVerifie(false)
-                .inscriptionPayee(isInscriptionPayee)
-                .solidaritePayee(false)
-                .detteInscription(java.math.BigDecimal.ZERO)
-                .detteSolidarite(java.math.BigDecimal.ZERO)
+                .inscriptionPayee(detteInscription.signum() == 0)
+                .solidaritePayee(detteSolidarite.signum() == 0)
+                .detteInscription(detteInscription)
+                .detteSolidarite(detteSolidarite)
                 .build();
 
         String clearPassword = "MonMot2Passe!";

@@ -1,6 +1,7 @@
 package com.mutuelle.api.service;
 
 import com.mutuelle.api.dto.ExerciceCreationResponse;
+import com.mutuelle.api.dto.PartsRenflouement;
 import com.mutuelle.api.entity.Exercice;
 import com.mutuelle.api.entity.ParametresGeneraux;
 import com.mutuelle.api.repository.ExerciceRepository;
@@ -51,6 +52,54 @@ public class ExerciceService {
         return exerciceRepository.findAllByOrderByDateOuvertureDesc();
     }
 
+    /**
+     * Parts dues par un membre créé pendant l'exercice en cours : celles mémorisées à
+     * l'ouverture ou, pour un exercice ouvert avant leur mémorisation, le même calcul
+     * refait avec les effectifs et la caisse actuels. Vide sans exercice en cours :
+     * rien n'est dû avant la prochaine ouverture, qui appliquera ses parts à tous.
+     */
+    public Optional<PartsRenflouement> partsPourNouveauMembre() {
+        return getExerciceEnCours().map(exercice -> {
+            if (exercice.getPartInscription() != null && exercice.getPartSolidarite() != null) {
+                return new PartsRenflouement(exercice.getPartInscription(), exercice.getPartSolidarite());
+            }
+            long membresActifs = membreRepository.countByEtatNot("Inactif");
+            if (membresActifs == 0) {
+                return new PartsRenflouement(BigDecimal.ZERO, BigDecimal.ZERO);
+            }
+            CalculRenflouement calcul = calculerRenflouement(
+                    parametresGenerauxService.getParametres(), membreRepository.count(), membresActifs);
+            return new PartsRenflouement(calcul.partInscription(), calcul.partSolidarite());
+        });
+    }
+
+    private record CalculRenflouement(BigDecimal cibleSolidarite, BigDecimal soldeCaisseSolidarite,
+                                      BigDecimal montantSolidarite, BigDecimal partSolidarite,
+                                      BigDecimal montantInscription, BigDecimal partInscription) {
+    }
+
+    private CalculRenflouement calculerRenflouement(ParametresGeneraux parametres, long totalMembres, long membresActifs) {
+        BigDecimal nbActifs = BigDecimal.valueOf(membresActifs);
+
+        // Renflouement caisse solidarités :
+        // (montant_solidarité × total membres) − solde actuel de la caisse,
+        // réparti entre les membres actifs.
+        BigDecimal cibleSolidarite = parametres.getMontantSolidarite()
+                .multiply(BigDecimal.valueOf(totalMembres));
+        BigDecimal soldeCaisseSolidarite = parametres.getCaisseSolidarites() != null
+                ? parametres.getCaisseSolidarites()
+                : BigDecimal.ZERO;
+        BigDecimal montantSolidarite = cibleSolidarite.subtract(soldeCaisseSolidarite).max(BigDecimal.ZERO);
+
+        // Renflouement caisse inscriptions : (mensualité × nb mois) + complément + forfait,
+        // réparti entre les membres actifs uniquement.
+        BigDecimal montantInscription = parametres.getMontantRenflouementInscription();
+
+        return new CalculRenflouement(cibleSolidarite, soldeCaisseSolidarite,
+                montantSolidarite, montantSolidarite.divide(nbActifs, 0, RoundingMode.CEILING),
+                montantInscription, montantInscription.divide(nbActifs, 0, RoundingMode.CEILING));
+    }
+
     public ExerciceCreationResponse ouvrirExercice(boolean force) {
         if (exerciceRepository.findByStatut("en cours").isPresent()) {
             throw new IllegalStateException("Il y a déjà un exercice en cours.");
@@ -72,26 +121,13 @@ public class ExerciceService {
                     "Aucun membre actif pour répartir les renflouements d'inscription et de solidarité.");
         }
 
-        BigDecimal nbActifs = BigDecimal.valueOf(membresActifs);
-
-        // Renflouement caisse solidarités :
-        // (montant_solidarité × total membres) − solde actuel de la caisse,
-        // réparti entre les membres actifs.
-        BigDecimal cibleSolidarite = parametres.getMontantSolidarite()
-                .multiply(BigDecimal.valueOf(totalMembres));
-        BigDecimal soldeCaisseSolidarite = parametres.getCaisseSolidarites() != null
-                ? parametres.getCaisseSolidarites()
-                : BigDecimal.ZERO;
-        BigDecimal montantRenflouementSolidarite = cibleSolidarite.subtract(soldeCaisseSolidarite);
-        if (montantRenflouementSolidarite.compareTo(BigDecimal.ZERO) < 0) {
-            montantRenflouementSolidarite = BigDecimal.ZERO;
-        }
-        BigDecimal partSolidarite = montantRenflouementSolidarite.divide(nbActifs, 0, RoundingMode.CEILING);
-
-        // Renflouement caisse inscriptions : (mensualité × nb mois) + complément + forfait,
-        // réparti entre les membres actifs uniquement.
-        BigDecimal montantRenflouementInscription = parametres.getMontantRenflouementInscription();
-        BigDecimal partInscription = montantRenflouementInscription.divide(nbActifs, 0, RoundingMode.CEILING);
+        CalculRenflouement calcul = calculerRenflouement(parametres, totalMembres, membresActifs);
+        BigDecimal cibleSolidarite = calcul.cibleSolidarite();
+        BigDecimal soldeCaisseSolidarite = calcul.soldeCaisseSolidarite();
+        BigDecimal montantRenflouementSolidarite = calcul.montantSolidarite();
+        BigDecimal partSolidarite = calcul.partSolidarite();
+        BigDecimal montantRenflouementInscription = calcul.montantInscription();
+        BigDecimal partInscription = calcul.partInscription();
 
         if (partSolidarite.compareTo(BigDecimal.ZERO) > 0) {
             membreRepository.appliquerPartSolidariteOuvertureExercice(partSolidarite);
@@ -105,6 +141,8 @@ public class ExerciceService {
                 .id(UUID.randomUUID().toString())
                 .dateOuverture(LocalDateTime.now())
                 .statut("en cours")
+                .partInscription(partInscription)
+                .partSolidarite(partSolidarite)
                 .build();
         Exercice saved = exerciceRepository.save(exercice);
 
