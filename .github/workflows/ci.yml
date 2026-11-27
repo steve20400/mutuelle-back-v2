@@ -102,6 +102,14 @@ jobs:
             -d '{"nom":"Fumee","prenom":"Test","couriel":"fumee@ci.test","telephone":"699000001"}' $API/api/membres)
           id=$(echo "$membre" | jq -r '.id')
           verifier "creation d'un membre" "true" "$([ -n "$id" ] && [ "$id" != null ] && echo true || echo false)"
+          # C1 : un membre cree pendant l'exercice en cours doit sa part d'inscription,
+          # et ses statuts doivent decouler de ses dettes (plus de « non paye » a 0 FCFA)
+          dette_ins=$(echo "$membre" | jq -r '.detteInscription')
+          dette_sol=$(echo "$membre" | jq -r '.detteSolidarite')
+          verifier "dette d'inscription positive" "true" "$(awk -v d="$dette_ins" 'BEGIN{print (d > 0) ? "true" : "false"}')"
+          verifier "statut inscription coherent" "$(awk -v d="$dette_ins" 'BEGIN{print (d == 0) ? "true" : "false"}')" "$(echo "$membre" | jq -r '.inscriptionPayee')"
+          verifier "statut solidarite coherent" "$(awk -v d="$dette_sol" 'BEGIN{print (d == 0) ? "true" : "false"}')" "$(echo "$membre" | jq -r '.solidaritePayee')"
+          verifier "paiement de l'inscription" 201 "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"membreId\":\"$id\",\"montant\":$dette_ins}" $API/api/versements/inscription)"
           # C8 : les listes de versements repondaient 500 des qu'elles n'etaient plus vides
           verifier "demande d'epargne" 201 "$(curl -s -o /dev/null -w '%{http_code}' -H 'Content-Type: application/json' -d "{\"membreId\":\"$id\",\"montant\":1000}" $API/api/versements/epargne)"
           verifier "historique du membre" 200 "$(curl -s -o /dev/null -w '%{http_code}' $API/api/versements/membre/$id)"
